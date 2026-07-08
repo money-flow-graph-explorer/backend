@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: money-flow-neo4j
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/password123
+      # Allow LOAD CSV from /var/lib/neo4j/import
+      NEO4J_server_directories_import: /var/lib/neo4j/import
+      # Raise heap for bulk-loading 1.3M rows
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+    volumes:
+      # Mount repo data/ into Neo4j's import directory
+      - ../data:/var/lib/neo4j/import
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
