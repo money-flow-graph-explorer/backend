@@ -32,4 +32,5 @@ monitor:
   fanInMinSenders: 3
   cycleMaxHops: 6
   maxSuspiciousAmount: 20
+  amountEqualityTolerance: 1.0
   csvPath: ../data/transactions.csv

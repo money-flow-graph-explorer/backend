@@ -24,6 +24,12 @@ public class MonitorProperties {
      */
     private double maxSuspiciousAmount = 0;
 
+    /**
+     * Maximum absolute spread (max − min) among the amounts in a candidate pattern
+     * for them to be considered "near-equal". Applies to both cycle and fan-in detectors.
+     */
+    private double amountEqualityTolerance = 1.0;
+
     /** Path to the transactions CSV (relative to working directory). */
     private String csvPath = "../data/transactions.csv";
 }

@@ -8,18 +8,19 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.IntStream;
 
 /**
  * Windowed AML detection.
  *
  * For each new edge (from) → (to) at timestamp T with window [T - windowSteps, T]:
  *
- *   1. FAN_IN  — count distinct senders into (to) within the window.
- *                Fires if count >= fanInMinSenders.
+ *   1. FAN_IN  — count distinct small-amount senders into {@code to} within the window.
+ *                Fires when count &ge; {@code fanInMinSenders} (recall-first; no amount
+ *                clustering — fraud fan-in amount spread is too wide and overlaps normal).
  *
  *   2. CYCLE   — check whether a directed path  to -[:TRANSFER*1..(L-1)]→ from
- *                exists using ONLY edges in the window.
+ *                exists using ONLY edges in the window, AND all edge amounts
+ *                (including the new closing edge) are within amountEqualityTolerance.
  *                A path found means the NEW edge closes a cycle.
  *
  * Key constraints (hard-won from prior bugs):
@@ -39,17 +40,18 @@ public class WindowedDetectionService {
     // ---------------------------------------------------------------
 
     public DetectionResult detect(TransactionEvent event) {
-        int from = event.getFrom();
-        int to   = event.getTo();
-        int T    = event.getTimestamp();
-        int lo   = T - props.getWindowSteps();
+        int    from      = event.getFrom();
+        int    to        = event.getTo();
+        int    T         = event.getTimestamp();
+        int    lo        = T - props.getWindowSteps();
+        double newAmount = event.getAmount();
 
         // --- 1. cycle check (run first: more specific) ---------------
-        DetectionResult cycleResult = detectCycle(from, to, T, lo);
+        DetectionResult cycleResult = detectCycle(from, to, T, lo, newAmount);
         if (cycleResult.isLaundering()) return cycleResult;
 
         // --- 2. fan-in check -----------------------------------------
-        DetectionResult fanInResult = detectFanIn(to, T, lo, from, event.getTxId());
+        DetectionResult fanInResult = detectFanIn(to, T, lo);
         if (fanInResult.isLaundering()) return fanInResult;
 
         return DetectionResult.builder()
@@ -71,7 +73,15 @@ public class WindowedDetectionService {
     // Cycle detection
     // ---------------------------------------------------------------
 
-    private DetectionResult detectCycle(int from, int to, int T, int lo) {
+    /**
+     * Looks for a path  (to) -[:TRANSFER*1..(L-1)]-&gt; (from)  within the window
+     * such that ALL edge amounts in the ring (intermediate path + the new closing
+     * edge whose amount is {@code newAmount}) are within {@code amountEqualityTolerance}.
+     *
+     * {@code newAmount} seeds the reduce expressions so the closing edge is folded
+     * into the ring-wide min/max without needing to materialise it as a graph element.
+     */
+    private DetectionResult detectCycle(int from, int to, int T, int lo, double newAmount) {
         // L = cycleMaxHops; max relationship hops in the intermediate path = L-1
         // (the new edge itself is the L-th hop closing the ring).
         // L-1 is inlined to satisfy Neo4j variable-length range constraint.
@@ -80,6 +90,11 @@ public class WindowedDetectionService {
         String query = String.format("""
                 MATCH path = (startNode:Account {accountId: $to})-[:TRANSFER*1..%d]->(endNode:Account {accountId: $from})
                 WHERE ALL(rel IN relationships(path) WHERE rel.timestamp >= $lo AND rel.timestamp <= $T AND rel.amount <= $maxAmt)
+                WITH path, [r IN relationships(path) | r.amount] AS amts
+                WITH path, amts,
+                     reduce(mx = $newAmt, x IN amts | CASE WHEN x > mx THEN x ELSE mx END) AS mx,
+                     reduce(mn = $newAmt, x IN amts | CASE WHEN x < mn THEN x ELSE mn END) AS mn
+                WHERE mx - mn <= $tol
                 RETURN [n IN nodes(path) | n.accountId] AS accts,
                        [r IN relationships(path) | r.txId] AS txIds,
                        [r IN relationships(path) | r.alertId] AS alertIds
@@ -93,6 +108,8 @@ public class WindowedDetectionService {
                     .bind(lo).to("lo")
                     .bind(T).to("T")
                     .bind(effectiveMaxAmount()).to("maxAmt")
+                    .bind(newAmount).to("newAmt")
+                    .bind(props.getAmountEqualityTolerance()).to("tol")
                     .fetch().one();
 
             if (result.isPresent()) {
@@ -130,7 +147,13 @@ public class WindowedDetectionService {
     // Fan-in detection
     // ---------------------------------------------------------------
 
-    private DetectionResult detectFanIn(int to, int T, int lo, int from, long txId) {
+    /**
+     * Recall-first fan-in detector: counts distinct small-amount senders into {@code to}
+     * within the window directly in Cypher. No Java-side amount clustering.
+     *
+     * Fires when {@code senders >= fanInMinSenders}.
+     */
+    private DetectionResult detectFanIn(int to, int T, int lo) {
         String query = """
                 MATCH (b:Account)-[r:TRANSFER]->(a:Account {accountId: $to})
                 WHERE r.timestamp >= $lo AND r.timestamp <= $T AND r.amount <= $maxAmt
@@ -150,15 +173,16 @@ public class WindowedDetectionService {
 
             if (result.isPresent()) {
                 Map<String, Object> row = result.get();
-                long senders = toLong(row.get("senders"));
-                if (senders >= props.getFanInMinSenders()) {
-                    List<Integer> accts    = new ArrayList<>(toIntList(row.get("senderAccts")));
+                long senderCount = toLong(row.get("senders"));
+
+                if (senderCount >= props.getFanInMinSenders()) {
+                    List<Integer> senderAccts = toIntList(row.get("senderAccts"));
+                    List<Long>    txIds       = toLongList(row.get("txIds"));
+                    List<Long>    alertIds    = toLongList(row.get("alertIds"));
+                    List<Long>    fraudTxIds  = buildFraudTxIds(txIds, alertIds);
+
+                    List<Integer> accts = new ArrayList<>(senderAccts);
                     if (!accts.contains(to)) accts.add(to);
-
-                    List<Long> txIds    = toLongList(row.get("txIds"));
-                    List<Long> alertIds = toLongList(row.get("alertIds"));
-
-                    List<Long> fraudTxIds = buildFraudTxIds(txIds, alertIds);
 
                     return DetectionResult.builder()
                             .laundering(true)
@@ -169,6 +193,7 @@ public class WindowedDetectionService {
                             .build();
                 }
             }
+
         } catch (Exception e) {
             log.debug("Fan-in query error (to={}): {}", to, e.getMessage());
         }
@@ -235,4 +260,6 @@ public class WindowedDetectionService {
         if (v instanceof Number n) return n.longValue();
         return 0L;
     }
+
 }
+
