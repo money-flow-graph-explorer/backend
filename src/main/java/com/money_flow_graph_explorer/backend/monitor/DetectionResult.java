@@ -19,4 +19,10 @@ public class DetectionResult {
 
     List<Integer> accounts;
     List<Long>    txIds;
+
+    /**
+     * Subset of {@code txIds} whose corresponding graph edge has alertId != -1.
+     * Non-empty means this alert involves at least one ground-truth fraud edge (true positive).
+     */
+    List<Long> fraudTxIds;
 }

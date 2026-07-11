@@ -11,7 +11,7 @@ import java.util.Map;
 /**
  * Kafka consumer that processes each transaction event:
  *   1. Runs windowed fan_in + cycle detection on the Neo4j graph.
- *   2. Evaluates result against ground-truth labels.
+ *   2. Records ground-truth coverage (every tx) and alert classification (detections only).
  *   3. Updates metrics + broadcasts SSE events to the frontend.
  */
 @Slf4j
@@ -34,12 +34,17 @@ public class DetectionConsumer {
     private void process(TransactionEvent event) {
         // ----- 1. Detection -----
         DetectionResult result = detectionService.detect(event);
-
-        // ----- 2. Ground-truth evaluation -----
         boolean predicted = result.isLaundering();
-        boolean truth     = event.getAlertId() != -1;   // alertId == -1 means normal
 
-        monitorService.recordEvaluation(predicted, truth, result.getPatternType());
+        // ----- 2. Coverage-based ground-truth evaluation -----
+        // Always record the streamed transaction's ground-truth label.
+        monitorService.recordStreamedTx(event);
+
+        // If detection fired, classify the alert as TP or FP based on involved fraud edges.
+        boolean correct = false;
+        if (predicted) {
+            correct = monitorService.recordDetection(result, result.getPatternType());
+        }
 
         // ----- 3. Broadcast "transaction" SSE event -----
         Map<String, Object> txPayload = new HashMap<>();
@@ -56,7 +61,6 @@ public class DetectionConsumer {
 
         // ----- 4. Broadcast "alert" SSE event (laundering only) -----
         if (predicted) {
-            boolean correct = truth; // TP if truth positive, FP if truth negative
             Map<String, Object> alertPayload = new HashMap<>();
             alertPayload.put("patternType", result.getPatternType());
             alertPayload.put("accounts",    result.getAccounts());

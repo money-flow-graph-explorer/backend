@@ -15,6 +15,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Central hub for SSE emitters and in-memory metrics.
  * Thread-safe: emitters stored in CopyOnWriteArrayList;
  * broadcast() prunes dead emitters.
+ *
+ * Coverage-based evaluation:
+ *   - recordStreamedTx()   — called once per consumed transaction to register ground-truth.
+ *   - recordDetection()    — called when detection fires; classifies alert as TP or FP
+ *                             based on whether any involved edge is ground-truth fraud.
  */
 @Slf4j
 @Service
@@ -82,35 +87,55 @@ public class MonitorService {
     }
 
     /**
-     * Record one processed transaction and update TP/FP/FN/TN.
+     * Called once per consumed transaction (regardless of detection).
+     * Increments the processed counter and, if the event is ground-truth fraud,
+     * registers its txId in {@code streamedFraudTxIds}.
      *
-     * @param predicted true = detection fired
-     * @param truth     true = ground-truth fraud (alertId != -1)
-     * @param patternType the pattern that fired, or null
+     * @param event the transaction event just consumed from Kafka
      */
-    public void recordEvaluation(boolean predicted, boolean truth, String patternType) {
+    public void recordStreamedTx(TransactionEvent event) {
         metrics.getProcessed().incrementAndGet();
-
-        if (predicted && truth)       { metrics.getTp().incrementAndGet(); }
-        else if (predicted)           { metrics.getFp().incrementAndGet(); }
-        else if (truth)               { metrics.getFn().incrementAndGet(); }
-        else                          { metrics.getTn().incrementAndGet(); }
-
-        if (predicted) {
-            metrics.getAlertsRaised().incrementAndGet();
-            if ("CIRCULAR_TRANSACTION".equals(patternType)) {
-                metrics.getCircular().getDetected().incrementAndGet();
-                if (truth) metrics.getCircular().getTp().incrementAndGet();
-                else       metrics.getCircular().getFp().incrementAndGet();
-            } else if ("FAN_IN".equals(patternType)) {
-                metrics.getFanIn().getDetected().incrementAndGet();
-                if (truth) metrics.getFanIn().getTp().incrementAndGet();
-                else       metrics.getFanIn().getFp().incrementAndGet();
-            }
+        if (event.getAlertId() != -1) {
+            metrics.getStreamedFraudTxIds().add(event.getTxId());
         }
     }
 
-    /** Clears metrics counters (called from /reset). */
+    /**
+     * Called when a detection alert fires.
+     * An alert is a <b>true positive</b> if {@code result.getFraudTxIds()} is non-empty
+     * (at least one involved edge is ground-truth fraud), else <b>false positive</b>.
+     * All covered fraud txIds are added to {@code coveredFraudTxIds} for recall tracking.
+     *
+     * @param result      the DetectionResult that triggered the alert
+     * @param patternType the pattern type string (already available on result, passed explicitly for clarity)
+     * @return true if this alert was a true positive
+     */
+    public boolean recordDetection(DetectionResult result, String patternType) {
+        boolean isTP = !result.getFraudTxIds().isEmpty();
+
+        metrics.getAlertsRaised().incrementAndGet();
+
+        if (isTP) {
+            metrics.getTp().incrementAndGet();
+            metrics.getCoveredFraudTxIds().addAll(result.getFraudTxIds());
+        } else {
+            metrics.getFp().incrementAndGet();
+        }
+
+        if ("CIRCULAR_TRANSACTION".equals(patternType)) {
+            metrics.getCircular().getDetected().incrementAndGet();
+            if (isTP) metrics.getCircular().getTp().incrementAndGet();
+            else       metrics.getCircular().getFp().incrementAndGet();
+        } else if ("FAN_IN".equals(patternType)) {
+            metrics.getFanIn().getDetected().incrementAndGet();
+            if (isTP) metrics.getFanIn().getTp().incrementAndGet();
+            else       metrics.getFanIn().getFp().incrementAndGet();
+        }
+
+        return isTP;
+    }
+
+    /** Clears all metrics counters and coverage sets (called from /reset). */
     public void resetMetrics() {
         metrics.reset();
     }

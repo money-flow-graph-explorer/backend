@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 /**
  * Windowed AML detection.
@@ -56,7 +57,14 @@ public class WindowedDetectionService {
                 .patternType(null)
                 .accounts(List.of())
                 .txIds(List.of())
+                .fraudTxIds(List.of())
                 .build();
+    }
+
+    /** Amount cap for suspicious edges; when disabled (&le;0) use +inf so the filter is a no-op. */
+    private double effectiveMaxAmount() {
+        double max = props.getMaxSuspiciousAmount();
+        return max > 0 ? max : Double.MAX_VALUE;
     }
 
     // ---------------------------------------------------------------
@@ -71,9 +79,10 @@ public class WindowedDetectionService {
 
         String query = String.format("""
                 MATCH path = (startNode:Account {accountId: $to})-[:TRANSFER*1..%d]->(endNode:Account {accountId: $from})
-                WHERE ALL(rel IN relationships(path) WHERE rel.timestamp >= $lo AND rel.timestamp <= $T)
+                WHERE ALL(rel IN relationships(path) WHERE rel.timestamp >= $lo AND rel.timestamp <= $T AND rel.amount <= $maxAmt)
                 RETURN [n IN nodes(path) | n.accountId] AS accts,
-                       [r IN relationships(path) | r.txId] AS txIds
+                       [r IN relationships(path) | r.txId] AS txIds,
+                       [r IN relationships(path) | r.alertId] AS alertIds
                 LIMIT 1
                 """, maxHops);
 
@@ -83,12 +92,16 @@ public class WindowedDetectionService {
                     .bind(from).to("from")
                     .bind(lo).to("lo")
                     .bind(T).to("T")
+                    .bind(effectiveMaxAmount()).to("maxAmt")
                     .fetch().one();
 
             if (result.isPresent()) {
                 Map<String, Object> row = result.get();
-                List<Integer> accts = toIntList(row.get("accts"));
-                List<Long>    txIds = toLongList(row.get("txIds"));
+                List<Integer> accts    = toIntList(row.get("accts"));
+                List<Long>    txIds    = toLongList(row.get("txIds"));
+                List<Long>    alertIds = toLongList(row.get("alertIds"));
+
+                List<Long> fraudTxIds = buildFraudTxIds(txIds, alertIds);
 
                 // Prepend 'from' to complete the ring: from → [path] → from
                 List<Integer> ringAccts = new ArrayList<>();
@@ -100,6 +113,7 @@ public class WindowedDetectionService {
                         .patternType("CIRCULAR_TRANSACTION")
                         .accounts(ringAccts)
                         .txIds(txIds)
+                        .fraudTxIds(fraudTxIds)
                         .build();
             }
         } catch (Exception e) {
@@ -108,7 +122,7 @@ public class WindowedDetectionService {
 
         return DetectionResult.builder()
                 .laundering(false).patternType(null)
-                .accounts(List.of()).txIds(List.of())
+                .accounts(List.of()).txIds(List.of()).fraudTxIds(List.of())
                 .build();
     }
 
@@ -119,10 +133,11 @@ public class WindowedDetectionService {
     private DetectionResult detectFanIn(int to, int T, int lo, int from, long txId) {
         String query = """
                 MATCH (b:Account)-[r:TRANSFER]->(a:Account {accountId: $to})
-                WHERE r.timestamp >= $lo AND r.timestamp <= $T
+                WHERE r.timestamp >= $lo AND r.timestamp <= $T AND r.amount <= $maxAmt
                 RETURN count(DISTINCT b) AS senders,
                        collect(DISTINCT b.accountId) AS senderAccts,
-                       collect(r.txId) AS txIds
+                       collect(r.txId) AS txIds,
+                       collect(r.alertId) AS alertIds
                 """;
 
         try {
@@ -130,22 +145,27 @@ public class WindowedDetectionService {
                     .bind(to).to("to")
                     .bind(lo).to("lo")
                     .bind(T).to("T")
+                    .bind(effectiveMaxAmount()).to("maxAmt")
                     .fetch().one();
 
             if (result.isPresent()) {
                 Map<String, Object> row = result.get();
                 long senders = toLong(row.get("senders"));
                 if (senders >= props.getFanInMinSenders()) {
-                    List<Integer> accts = new ArrayList<>(toIntList(row.get("senderAccts")));
+                    List<Integer> accts    = new ArrayList<>(toIntList(row.get("senderAccts")));
                     if (!accts.contains(to)) accts.add(to);
 
-                    List<Long> txIds = toLongList(row.get("txIds"));
+                    List<Long> txIds    = toLongList(row.get("txIds"));
+                    List<Long> alertIds = toLongList(row.get("alertIds"));
+
+                    List<Long> fraudTxIds = buildFraudTxIds(txIds, alertIds);
 
                     return DetectionResult.builder()
                             .laundering(true)
                             .patternType("FAN_IN")
                             .accounts(accts)
                             .txIds(txIds)
+                            .fraudTxIds(fraudTxIds)
                             .build();
                 }
             }
@@ -155,8 +175,27 @@ public class WindowedDetectionService {
 
         return DetectionResult.builder()
                 .laundering(false).patternType(null)
-                .accounts(List.of()).txIds(List.of())
+                .accounts(List.of()).txIds(List.of()).fraudTxIds(List.of())
                 .build();
+    }
+
+    // ---------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------
+
+    /**
+     * Returns the subset of txIds whose corresponding alertId != -1 (i.e., ground-truth fraud).
+     * Both lists are assumed to be parallel (same index = same edge).
+     */
+    private List<Long> buildFraudTxIds(List<Long> txIds, List<Long> alertIds) {
+        List<Long> fraud = new ArrayList<>();
+        int len = Math.min(txIds.size(), alertIds.size());
+        for (int i = 0; i < len; i++) {
+            if (alertIds.get(i) != -1L) {
+                fraud.add(txIds.get(i));
+            }
+        }
+        return fraud;
     }
 
     // ---------------------------------------------------------------

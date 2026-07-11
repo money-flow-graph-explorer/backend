@@ -28,7 +28,8 @@ logging:
     org.springframework.data.neo4j: INFO
 
 monitor:
-  windowSteps: 7
+  windowSteps: 10
   fanInMinSenders: 3
   cycleMaxHops: 6
+  maxSuspiciousAmount: 20
   csvPath: ../data/transactions.csv

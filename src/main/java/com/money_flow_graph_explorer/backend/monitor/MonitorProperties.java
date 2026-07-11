@@ -18,6 +18,12 @@ public class MonitorProperties {
     /** Maximum hop count for cycle detection. */
     private int cycleMaxHops = 6;
 
+    /**
+     * Only edges with amount &le; this are considered suspicious (laundering in this dataset
+     * is structured into tiny amounts). 0 disables the filter.
+     */
+    private double maxSuspiciousAmount = 0;
+
     /** Path to the transactions CSV (relative to working directory). */
     private String csvPath = "../data/transactions.csv";
 }
