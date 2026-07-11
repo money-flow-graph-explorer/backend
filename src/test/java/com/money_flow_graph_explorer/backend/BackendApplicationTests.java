@@ -1,6 +1,7 @@
 package com.money_flow_graph_explorer.backend;
 
 import com.money_flow_graph_explorer.backend.account.AccountRepository;
+import com.money_flow_graph_explorer.backend.monitor.TransactionEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.data.neo4j.autoconfigure.DataNeo4jAutoConfiguration;
@@ -11,6 +12,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.neo4j.core.Neo4jClient;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration;
 
 import static org.mockito.Mockito.mock;
 
@@ -19,7 +22,8 @@ import static org.mockito.Mockito.mock;
         Neo4jAutoConfiguration.class,
         DataNeo4jAutoConfiguration.class,
         DataNeo4jRepositoriesAutoConfiguration.class,
-        DataNeo4jReactiveRepositoriesAutoConfiguration.class
+        DataNeo4jReactiveRepositoriesAutoConfiguration.class,
+        KafkaAutoConfiguration.class
 })
 class BackendApplicationTests {
 
@@ -34,6 +38,12 @@ class BackendApplicationTests {
         @Bean
         public AccountRepository accountRepository() {
             return mock(AccountRepository.class);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Bean
+        public KafkaTemplate<String, TransactionEvent> kafkaTemplate() {
+            return mock(KafkaTemplate.class);
         }
     }
 

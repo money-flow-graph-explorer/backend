@@ -6,6 +6,19 @@ spring:
     authentication:
       username: neo4j
       password: password123
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: aml-monitor
+      auto-offset-reset: latest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.money_flow_graph_explorer.backend.monitor"
+        spring.json.value.default.type: "com.money_flow_graph_explorer.backend.monitor.TransactionEvent"
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
 server:
   port: 8080
@@ -13,3 +26,9 @@ server:
 logging:
   level:
     org.springframework.data.neo4j: INFO
+
+monitor:
+  windowSteps: 7
+  fanInMinSenders: 3
+  cycleMaxHops: 6
+  csvPath: ../data/transactions.csv
