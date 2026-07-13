@@ -32,4 +32,30 @@ public class MonitorProperties {
 
     /** Path to the transactions CSV (relative to working directory). */
     private String csvPath = "../data/transactions.csv";
+
+    /** XGBoost re-score model config (step 2 wiring not yet implemented). */
+    private Model model = new Model();
+
+    @Data
+    public static class Model {
+
+        /** Enable model re-scoring (not yet wired — reserved for step 2). */
+        private boolean enabled = false;
+
+        /** Base URL of the model inference service. */
+        private String url = "http://localhost:8000";
+
+        /** Score threshold above which an alert is confirmed by the model. */
+        private double threshold = 0.5;
+
+        /**
+         * When true, FeatureExtractor is invoked on every rule candidate and the
+         * resulting feature row is appended to {@link #trainingDataPath}.
+         * Does NOT suppress or alter detection behaviour.
+         */
+        private boolean collectTrainingData = false;
+
+        /** Path to the training-data CSV (relative to the service working directory). */
+        private String trainingDataPath = "../data/training_candidates.csv";
+    }
 }

@@ -34,3 +34,9 @@ monitor:
   maxSuspiciousAmount: 20
   amountEqualityTolerance: 1.0
   csvPath: ../data/transactions.csv
+  model:
+    enabled: false
+    url: http://localhost:8000
+    threshold: 0.5
+    collectTrainingData: false
+    trainingDataPath: ../data/training_candidates.csv
