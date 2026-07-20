@@ -7,8 +7,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -143,5 +145,21 @@ public class MonitorService {
     /** Total number of active SSE clients (for diagnostics). */
     public int activeEmitters() {
         return emitters.size();
+    }
+
+    /**
+     * txIds of streamed ground-truth-fraud transactions not yet covered by any TP alert —
+     * i.e. the identity set backing the derived {@code fn} metric.
+     *
+     * Exists because the SSE stream only carries events to clients connected at the moment
+     * they fire: a client that connects mid-session (or reconnects after a drop) never
+     * receives earlier broadcasts, so its local buffers can under-count relative to this
+     * authoritative, session-cumulative set. Callers needing the exact FN case list should
+     * fetch this rather than rely on client-side SSE accumulation.
+     */
+    public Set<Long> getMissedFraudTxIds() {
+        Set<Long> missed = new HashSet<>(metrics.getStreamedFraudTxIds());
+        missed.removeAll(metrics.getCoveredFraudTxIds());
+        return missed;
     }
 }
