@@ -52,8 +52,10 @@ public class ProducerService {
      * Start the replay loop.
      *
      * @param rateMs   milliseconds to sleep between sends (default 10)
-     * @param limit    max number of rows to process (default 5000)
-     * @param maxStep  optional; if > 0 only rows with timestamp <= maxStep are included
+     * @param limit    max number of rows to process; &le;0 disables the cap
+     * @param maxStep  if &ge;0, only rows with timestamp &le; maxStep are included
+     *                 (0 is a valid, meaningful cutoff — Day 0 only); negative disables
+     *                 the day cutoff entirely
      */
     public synchronized void start(int rateMs, int limit, int maxStep) {
         if (running.get()) {
@@ -159,7 +161,7 @@ public class ProducerService {
             while ((line = br.readLine()) != null) {
                 CsvRow row = parseLine(line);
                 if (row == null) continue;
-                if (maxStep > 0 && row.timestamp > maxStep) continue;
+                if (maxStep >= 0 && row.timestamp > maxStep) continue;
                 rows.add(row);
             }
         }

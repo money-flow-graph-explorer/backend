@@ -16,7 +16,7 @@ import java.util.Set;
  * REST + SSE controller for the real-time AML monitoring pipeline.
  *
  * Endpoints:
- *   POST /api/monitor/start   — begin CSV replay (query params: rate, limit, maxStep)
+ *   POST /api/monitor/start   — begin CSV replay (query params: rate, days)
  *   POST /api/monitor/stop    — stop replay
  *   POST /api/monitor/reset   — delete TRANSFER edges, clear metrics
  *   GET  /api/monitor/metrics — current MonitorMetrics snapshot
@@ -41,17 +41,35 @@ public class MonitorController {
     // POST /start
     // ---------------------------------------------------------------
 
+    /**
+     * Replays every transaction whose simulation day falls within the requested window —
+     * {@code days=1} means "Day 0 only", {@code days=2} means "Day 0 and Day 1", etc.
+     * (Day is 0-indexed in the dataset, so the cutoff is {@code days - 1}.)
+     * {@code days=0} replays the full 200-day dataset (no day cutoff).
+     *
+     * This replaces the old raw-row-count {@code limit} — a count cap doesn't guarantee any
+     * given multi-day pattern (e.g. a fan-in whose legs span several days) gets a chance to
+     * fully stream, since the CSV is replayed in chronological order and a count limit can
+     * cut off well before spanning the days a pattern actually needs.
+     */
     @PostMapping("/start")
     public Map<String, Object> start(
-            @RequestParam(defaultValue = "10")   int rate,
-            @RequestParam(defaultValue = "5000") int limit,
-            @RequestParam(required = false, defaultValue = "0") int maxStep
+            @RequestParam(defaultValue = "10") int rate,
+            @RequestParam(defaultValue = "1")  int days
     ) {
-        producerService.start(rate, limit, maxStep);
+        if (days < 0) {
+            throw new IllegalArgumentException("days must be >= 0");
+        }
+        // days=0 → maxStep=-1, a negative sentinel ProducerService reads as "no day cutoff"
+        // (see ProducerService#loadCsv) — NOT 0, since 0 is itself a meaningful cutoff
+        // (Day 0 only) once days=1. limit=0 disables the row-count cap entirely, so the
+        // day cutoff is the sole volume control and the full requested range always streams.
+        int maxStep = days == 0 ? -1 : days - 1;
+        producerService.start(rate, 0, maxStep);
         return Map.of(
-                "status",  "started",
-                "rate",    rate,
-                "limit",   limit,
+                "status", "started",
+                "rate",   rate,
+                "days",   days,
                 "maxStep", maxStep
         );
     }
